@@ -198,23 +198,31 @@ class ProjectManager:
             frame.place(relx=i/3, rely=0, relwidth=1/3, relheight=1)
             tk.Label(frame, text=col, font=FONT_HEADER, pady=15).pack()
             
-            # Treeview automatically uses the style defined in __init__
-            tree = ttk.Treeview(frame, columns=("Description"), show="tree headings")
+            # Updated Treeview with "Branch" and "Description" columns
+            tree = ttk.Treeview(frame, columns=("Branch", "Description"), show="tree headings")
             tree.heading("#0", text="Task Name")
+            tree.heading("Branch", text="Git Branch")
             tree.heading("Description", text="Brief Description")
+            
+            # Set default column widths
+            tree.column("#0", width=200)
+            tree.column("Branch", width=150)
+            tree.column("Description", width=250)
+            
             tree.pack(fill="both", expand=True, padx=5, pady=5)
             self.tree_views[col] = tree
             
             tree.bind("<Button-3>", lambda e, c=col: self.show_context_menu(e, c, project_name))
             
             for task in self.projects[project_name]["tasks"][col]:
-                tree.insert("", "end", text=task['name'], values=(task.get('desc', ''),))
+                # Backward compatibility: handle missing "branch" key
+                tree.insert("", "end", text=task['name'], values=(task.get('branch', ''), task.get('desc', ''),))
 
     def show_context_menu(self, event, column_name, project_name):
         menu = tk.Menu(self.root, tearoff=0, font=FONT_MAIN)
         menu.add_command(label="New Task", command=lambda: self.add_task(column_name, project_name))
         menu.add_command(label="Delete Task", command=lambda: self.delete_task(column_name, project_name))
-        menu.add_command(label="Rename Task", command=lambda: self.rename_task(column_name, project_name))
+        menu.add_command(label="Edit Task", command=lambda: self.edit_task(column_name, project_name))
         menu.add_separator()
         
         # Dynamic Move Options
@@ -226,15 +234,14 @@ class ProjectManager:
         menu.post(event.x_root, event.y_root)
 
     def add_task(self, col, p_name):
-        # Note: standard simpledialog font is hard to scale directly,
-        # but the main UI elements are now much larger.
         name = simpledialog.askstring("Task Setup", "Task Name:", parent=self.root)
         if not name: return
+        branch = simpledialog.askstring("Task Setup", "Git Branch:", parent=self.root)
         desc = simpledialog.askstring("Task Setup", "Brief Description:", parent=self.root)
         
-        task_data = {"name": name, "desc": desc or ""}
+        task_data = {"name": name, "branch": branch or "", "desc": desc or ""}
         self.projects[p_name]["tasks"][col].append(task_data)
-        self.tree_views[col].insert("", "end", text=name, values=(desc or "",))
+        self.tree_views[col].insert("", "end", text=name, values=(branch or "", desc or "",))
         self.save_project(p_name)
 
     def delete_task(self, col, p_name):
@@ -244,25 +251,36 @@ class ProjectManager:
         
         if messagebox.askokcancel("Confirm", "Permanently delete this task?", parent=self.root):
             task_name = tree.item(selected)['text']
-            # Improved Task lookup to avoid object mismatch
             self.projects[p_name]["tasks"][col] = [t for t in self.projects[p_name]["tasks"][col] if t['name'] != task_name]
             tree.delete(selected)
             self.save_project(p_name)
 
-    def rename_task(self, col, p_name):
+    def edit_task(self, col, p_name):
         tree = self.tree_views[col]
         selected = tree.selection()
         if not selected: return
 
-        new_name = simpledialog.askstring("Rename", "Enter new task name:", parent=self.root)
-        if new_name:
-            old_name = tree.item(selected)['text']
-            # Object update
-            for t in self.projects[p_name]["tasks"][col]:
-                if t['name'] == old_name:
-                    t['name'] = new_name
-            tree.item(selected, text=new_name)
-            self.save_project(p_name)
+        item = tree.item(selected)
+        old_name = item['text']
+        old_branch = item['values'][0]
+        old_desc = item['values'][1]
+
+        new_name = simpledialog.askstring("Edit Task", "Task Name:", parent=self.root, initialvalue=old_name)
+        if not new_name: return
+        
+        new_branch = simpledialog.askstring("Edit Task", "Git Branch:", parent=self.root, initialvalue=old_branch)
+        new_desc = simpledialog.askstring("Edit Task", "Brief Description:", parent=self.root, initialvalue=old_desc)
+
+        # Update persistent data
+        for t in self.projects[p_name]["tasks"][col]:
+            if t['name'] == old_name:
+                t['name'] = new_name
+                t['branch'] = new_branch or ""
+                t['desc'] = new_desc or ""
+        
+        # Update Treeview GUI
+        tree.item(selected, text=new_name, values=(new_branch or "", new_desc or ""))
+        self.save_project(p_name)
 
     def move_task(self, from_col, to_col, p_name):
         tree_from = self.tree_views[from_col]
@@ -271,7 +289,8 @@ class ProjectManager:
 
         item = tree_from.item(selected)
         task_name = item['text']
-        task_desc = item['values'][0]
+        task_branch = item['values'][0]
+        task_desc = item['values'][1]
         
         # Atomic Data Move
         task_list_from = self.projects[p_name]["tasks"][from_col]
@@ -282,7 +301,7 @@ class ProjectManager:
             
             # GUI Update
             tree_from.delete(selected)
-            self.tree_views[to_col].insert("", "end", text=task_name, values=(task_desc,))
+            self.tree_views[to_col].insert("", "end", text=task_name, values=(task_branch, task_desc,))
             self.save_project(p_name)
         except StopIteration:
             messagebox.showerror("Error", "Task object state inconsistent. Refresh Board.", parent=self.root)
