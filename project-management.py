@@ -326,7 +326,7 @@ class ProjectManager:
         board.geometry("1400x800")
 
         columns = ["Not Started", "In Progress", "Completed"]
-        self.tree_views = {}
+        board_trees = {}
 
         for i, col in enumerate(columns):
             frame = tk.Frame(board, bd=3, relief="groove")
@@ -340,40 +340,49 @@ class ProjectManager:
             tree.column("Branch", width=200)
             
             tree.pack(fill="both", expand=True, padx=5, pady=5)
-            self.tree_views[col] = tree
+            board_trees[col] = tree
             
-            tree.bind("<Button-3>", lambda e, c=col: self.show_context_menu(e, c, project_name, req_idx))
+            tree.bind("<Button-3>", lambda e, c=col: self.show_context_menu(e, c, project_name, req_idx, board_trees))
             
             for task in self.projects[project_name]["requirements"][req_idx]["tasks"].get(col, []):
                 tree.insert("", "end", text=task['name'], values=(task.get('branch', ''),))
 
-    def show_context_menu(self, event, column_name, project_name, req_idx):
-        menu = tk.Menu(self.root, tearoff=0, font=FONT_MAIN)
-        menu.add_command(label="New Task", command=lambda: self.add_task(column_name, project_name, req_idx))
-        menu.add_command(label="Delete Task", command=lambda: self.delete_task(column_name, project_name, req_idx))
-        menu.add_command(label="Edit Task", command=lambda: self.edit_task(column_name, project_name, req_idx))
-        menu.add_separator()
+    def show_context_menu(self, event, column_name, project_name, req_idx, board_trees):
+        tree = board_trees[column_name]
+        item_id = tree.identify_row(event.y)
         
-        # Dynamic Move Options
-        cols = ["Not Started", "In Progress", "Completed"]
-        for c in cols:
-            if c != column_name:
-                menu.add_command(label=f"Move to {c}", command=lambda target=c: self.move_task(column_name, target, project_name, req_idx))
+        menu = tk.Menu(self.root, tearoff=0, font=FONT_MAIN)
+        
+        if item_id:
+            tree.selection_set(item_id)
+            menu.add_command(label="Edit Task", command=lambda: self.edit_task(column_name, project_name, req_idx, board_trees))
+            menu.add_command(label="Delete Task", command=lambda: self.delete_task(column_name, project_name, req_idx, board_trees))
+            menu.add_separator()
+            
+            # Dynamic Move Options
+            cols = ["Not Started", "In Progress", "Completed"]
+            for c in cols:
+                if c != column_name:
+                    menu.add_command(label=f"Move to {c}", command=lambda target=c: self.move_task(column_name, target, project_name, req_idx, board_trees))
+        else:
+            menu.add_command(label="New Task", command=lambda: self.add_task(column_name, project_name, req_idx, board_trees))
+            menu.add_command(label="Edit Task", command=lambda: messagebox.showwarning("Selection", "Select a task first.", parent=self.root))
+            menu.add_command(label="Delete Task", command=lambda: messagebox.showwarning("Selection", "Select a task first.", parent=self.root))
         
         menu.post(event.x_root, event.y_root)
 
-    def add_task(self, col, p_name, req_idx):
+    def add_task(self, col, p_name, req_idx, board_trees):
         name = simpledialog.askstring("Task Setup", "Task Name:", parent=self.root)
         if not name: return
         branch = simpledialog.askstring("Task Setup", "Git Branch:", parent=self.root)
         
         task_data = {"name": name, "branch": branch or ""}
         self.projects[p_name]["requirements"][req_idx]["tasks"][col].append(task_data)
-        self.tree_views[col].insert("", "end", text=name, values=(branch or "",))
+        board_trees[col].insert("", "end", text=name, values=(branch or "",))
         self.save_project(p_name)
 
-    def delete_task(self, col, p_name, req_idx):
-        tree = self.tree_views[col]
+    def delete_task(self, col, p_name, req_idx, board_trees):
+        tree = board_trees[col]
         selected = tree.selection()
         if not selected: return
         
@@ -383,8 +392,8 @@ class ProjectManager:
             tree.delete(selected)
             self.save_project(p_name)
 
-    def edit_task(self, col, p_name, req_idx):
-        tree = self.tree_views[col]
+    def edit_task(self, col, p_name, req_idx, board_trees):
+        tree = board_trees[col]
         selected = tree.selection()
         if not selected: return
 
@@ -405,15 +414,14 @@ class ProjectManager:
         tree.item(selected, text=new_name, values=(new_branch or "",))
         self.save_project(p_name)
 
-    def move_task(self, from_col, to_col, p_name, req_idx):
-        tree_from = self.tree_views[from_col]
+    def move_task(self, from_col, to_col, p_name, req_idx, board_trees):
+        tree_from = board_trees[from_col]
         selected = tree_from.selection()
         if not selected: return
 
         item = tree_from.item(selected)
         task_name = item['text']
         task_branch = item['values'][0]
-        task_desc = item['values'][1]
         
         task_list_from = self.projects[p_name]["requirements"][req_idx]["tasks"][from_col]
         try:
@@ -422,7 +430,7 @@ class ProjectManager:
             self.projects[p_name]["requirements"][req_idx]["tasks"][to_col].append(task_obj)
             
             tree_from.delete(selected)
-            self.tree_views[to_col].insert("", "end", text=task_name, values=(task_branch,))
+            board_trees[to_col].insert("", "end", text=task_name, values=(task_branch,))
             self.save_project(p_name)
         except StopIteration:
             messagebox.showerror("Error", "Task object state inconsistent. Refresh Board.", parent=self.root)
