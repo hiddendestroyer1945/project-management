@@ -46,7 +46,7 @@ class ProjectManager:
     def setup_menu(self):
         menubar = tk.Menu(self.root, font=FONT_MAIN)
         file_menu = tk.Menu(menubar, tearoff=0, font=FONT_MAIN)
-        file_menu.add_command(label="Create", command=self.open_create_project_window)
+        file_menu.add_command(label="New", command=self.open_create_project_window)
         file_menu.add_command(label="List", command=self.open_list_projects_window)
         file_menu.add_separator()
         file_menu.add_command(label="Exit", command=self.root.quit)
@@ -102,7 +102,7 @@ class ProjectManager:
 
     def open_create_project_window(self):
         win = tk.Toplevel(self.root)
-        win.title("Create Project")
+        win.title("New Project")
         win.geometry("600x400") # Increased
         win.grab_set() # Modal focus
         
@@ -139,7 +139,7 @@ class ProjectManager:
             win.destroy()
             messagebox.showinfo("Success", f"Project '{safe_name}' Created", parent=self.root)
 
-        tk.Button(win, text="Create", command=save, width=12, font=FONT_BOLD).grid(row=3, column=0, pady=25)
+        tk.Button(win, text="New", command=save, width=12, font=FONT_BOLD).grid(row=3, column=0, pady=25)
         tk.Button(win, text="Cancel", command=win.destroy, width=12, font=FONT_BOLD).grid(row=3, column=1, pady=25)
 
     def open_list_projects_window(self):
