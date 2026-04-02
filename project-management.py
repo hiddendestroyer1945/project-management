@@ -65,19 +65,37 @@ class ProjectManager:
     # --- PERSISTENCE LOGIC ---
     
     def load_all_projects(self) -> Dict[str, Any]:
-        """Loads all projects from JSON files with error reporting."""
+        """Loads all projects from JSON files with error reporting and migration."""
         projects = {}
         if not os.path.exists(PROJECTS_DIR):
             return projects
 
         for filename in os.listdir(PROJECTS_DIR):
             if filename.endswith(".json"):
-                # Use filename as project name fallback or load from data
                 p_id = filename[:-5]
                 filepath = os.path.join(PROJECTS_DIR, filename)
                 try:
                     with open(filepath, "r", encoding="utf-8") as f:
                         data = json.load(f)
+                        
+                        # Migration: If old structure (tasks at root), move to a default requirement
+                        if "tasks" in data and "requirements" not in data:
+                            print(f"[*] Migrating legacy project: {p_id}")
+                            legacy_tasks = data["tasks"]
+                            # Convert 1.0 columns (Running/Ended) to 2.0 (In Progress/Completed)
+                            migrated_tasks = {
+                                "Not Started": legacy_tasks.get("Not Started", []),
+                                "In Progress": legacy_tasks.get("Running", []),
+                                "Completed": legacy_tasks.get("Ended", [])
+                            }
+                            data["requirements"] = [{
+                                "name": "General Tasks",
+                                "type": "Basic",
+                                "completed": False,
+                                "tasks": migrated_tasks
+                            }]
+                            del data["tasks"]
+                            
                         projects[p_id] = data
                 except (json.JSONDecodeError, OSError) as e:
                     print(f"[*] Critical: Skipping corrupt project file {filename}: {e}")
@@ -133,11 +151,12 @@ class ProjectManager:
             self.projects[safe_name] = {
                 "display_name": raw_name,
                 "dates": (start_ent.get(), end_ent.get()),
-                "tasks": {"Not Started": [], "Running": [], "Ended": []}
+                "requirements": [] # New hierarchical structure
             }
             self.save_project(safe_name)
             win.destroy()
             messagebox.showinfo("Success", f"Project '{safe_name}' Created", parent=self.root)
+            self.open_requirements_page(safe_name)
 
         tk.Button(win, text="New", command=save, width=12, font=FONT_BOLD).grid(row=3, column=0, pady=25)
         tk.Button(win, text="Cancel", command=win.destroy, width=12, font=FONT_BOLD).grid(row=3, column=1, pady=25)
@@ -174,7 +193,7 @@ class ProjectManager:
         def on_double_click(event):
             selected = lb.curselection()
             if selected:
-                self.open_kanban_board(lb.get(selected))
+                self.open_requirements_page(lb.get(selected))
 
         btn_frame = tk.Frame(list_win)
         btn_frame.pack(pady=20)
@@ -183,14 +202,130 @@ class ProjectManager:
         
         lb.bind("<Double-Button-1>", on_double_click)
 
+    # --- REQUIREMENTS MANAGEMENT ---
+
+    def open_requirements_page(self, project_name):
+        req_win = tk.Toplevel(self.root)
+        req_win.title(f"Requirements - {project_name}")
+        req_win.geometry("1000x700")
+
+        frame = tk.Frame(req_win)
+        frame.pack(fill="both", expand=True, padx=20, pady=20)
+
+        tk.Label(frame, text="Double-click to open Tasks | Right-click for Options", font=("Arial", 14, "italic")).pack(pady=10)
+
+        columns = ("Name", "Type")
+        tree = ttk.Treeview(frame, columns=columns, show="headings", selectmode="browse")
+        tree.heading("Name", text="Requirement Name")
+        tree.heading("Type", text="Requirement Type")
+        tree.column("Name", width=600)
+        tree.column("Type", width=200)
+
+        # Tag for coloring completed requirements green
+        tree.tag_configure("completed", background="lightgreen")
+
+        tree.pack(fill="both", expand=True)
+
+        def refresh_tree():
+            for item in tree.get_children():
+                tree.delete(item)
+            for idx, req in enumerate(self.projects[project_name]["requirements"]):
+                tags = ("completed",) if req.get("completed", False) else ()
+                tree.insert("", "end", iid=str(idx), values=(req["name"], req["type"]), tags=tags)
+
+        refresh_tree()
+
+        def show_req_context_menu(event):
+            item_id = tree.identify_row(event.y)
+            menu = tk.Menu(req_win, tearoff=0, font=FONT_MAIN)
+            
+            if item_id:
+                tree.selection_set(item_id)
+                idx = int(item_id)
+                menu.add_command(label="Edit Requirement", command=lambda: self.add_edit_requirement_dialog(project_name, idx, refresh_tree))
+                menu.add_command(label="Delete Requirement", command=lambda: self.delete_requirement(project_name, idx, refresh_tree))
+                menu.add_command(label="Completed", command=lambda: self.toggle_requirement_completion(project_name, idx, refresh_tree))
+            else:
+                menu.add_command(label="New Requirement", command=lambda: self.add_edit_requirement_dialog(project_name, None, refresh_tree))
+                menu.add_command(label="Edit Requirement", command=lambda: messagebox.showwarning("Selection", "Select a requirement first."))
+                menu.add_command(label="Delete Requirement", command=lambda: messagebox.showwarning("Selection", "Select a requirement first."))
+            
+            menu.post(event.x_root, event.y_root)
+
+        tree.bind("<Button-3>", show_req_context_menu)
+        tree.bind("<Double-Button-1>", lambda e: self.on_req_double_click(project_name, tree))
+
+    def on_req_double_click(self, project_name, tree):
+        selected = tree.selection()
+        if selected:
+            idx = int(selected[0])
+            self.open_kanban_board(project_name, idx)
+
+    def add_edit_requirement_dialog(self, project_name, req_idx, callback):
+        win = tk.Toplevel(self.root)
+        is_edit = req_idx is not None
+        win.title("Edit Requirement" if is_edit else "New Requirement")
+        win.geometry("500x350")
+        win.grab_set()
+
+        req_data = self.projects[project_name]["requirements"][req_idx] if is_edit else {}
+
+        tk.Label(win, text="Name:", font=FONT_MAIN).grid(row=0, column=0, padx=20, pady=20)
+        name_ent = tk.Entry(win, font=FONT_MAIN, width=30)
+        name_ent.grid(row=0, column=1)
+        name_ent.insert(0, req_data.get("name", ""))
+
+        tk.Label(win, text="Type:", font=FONT_MAIN).grid(row=1, column=0, padx=20, pady=20)
+        type_combo = ttk.Combobox(win, values=["Basic", "Key", "Functional", "Technical"], font=FONT_MAIN, state="readonly")
+        type_combo.grid(row=1, column=1)
+        type_combo.set(req_data.get("type", "Basic"))
+
+        def save():
+            name = name_ent.get().strip()
+            if not name:
+                messagebox.showwarning("Input Error", "Name is required.", parent=win)
+                return
+            
+            new_req = {
+                "name": name,
+                "type": type_combo.get(),
+                "completed": req_data.get("completed", False),
+                "tasks": req_data.get("tasks", {"Not Started": [], "In Progress": [], "Completed": []})
+            }
+
+            if is_edit:
+                self.projects[project_name]["requirements"][req_idx] = new_req
+            else:
+                self.projects[project_name]["requirements"].append(new_req)
+            
+            self.save_project(project_name)
+            callback()
+            win.destroy()
+
+        tk.Button(win, text="OK", command=save, font=FONT_BOLD, width=10).grid(row=2, column=0, pady=40)
+        tk.Button(win, text="Cancel", command=win.destroy, font=FONT_BOLD, width=10).grid(row=2, column=1, pady=40)
+
+    def delete_requirement(self, project_name, req_idx, callback):
+        if messagebox.askokcancel("Verify Delete", "Are you sure delete this requirement.", parent=self.root):
+            self.projects[project_name]["requirements"].pop(req_idx)
+            self.save_project(project_name)
+            callback()
+
+    def toggle_requirement_completion(self, project_name, req_idx, callback):
+        req = self.projects[project_name]["requirements"][req_idx]
+        req["completed"] = not req.get("completed", False)
+        self.save_project(project_name)
+        callback()
+
     # --- TASK MANAGEMENT (KANBAN BOARD) ---
 
-    def open_kanban_board(self, project_name):
+    def open_kanban_board(self, project_name, req_idx):
+        req_name = self.projects[project_name]["requirements"][req_idx]["name"]
         board = tk.Toplevel(self.root)
-        board.title(f"Board: {project_name}")
-        board.geometry("1400x800") # Increased significantly for layout
+        board.title(f"Tasks: {req_name} ({project_name})")
+        board.geometry("1400x800")
 
-        columns = ["Not Started", "Running", "Ended"]
+        columns = ["Not Started", "In Progress", "Completed"]
         self.tree_views = {}
 
         for i, col in enumerate(columns):
@@ -198,13 +333,10 @@ class ProjectManager:
             frame.place(relx=i/3, rely=0, relwidth=1/3, relheight=1)
             tk.Label(frame, text=col, font=FONT_HEADER, pady=15).pack()
             
-            # Updated Treeview with "Branch" and "Description" columns
             tree = ttk.Treeview(frame, columns=("Branch", "Description"), show="tree headings")
             tree.heading("#0", text="Task Name")
             tree.heading("Branch", text="Git Branch")
             tree.heading("Description", text="Brief Description")
-            
-            # Set default column widths
             tree.column("#0", width=200)
             tree.column("Branch", width=150)
             tree.column("Description", width=250)
@@ -212,50 +344,49 @@ class ProjectManager:
             tree.pack(fill="both", expand=True, padx=5, pady=5)
             self.tree_views[col] = tree
             
-            tree.bind("<Button-3>", lambda e, c=col: self.show_context_menu(e, c, project_name))
+            tree.bind("<Button-3>", lambda e, c=col: self.show_context_menu(e, c, project_name, req_idx))
             
-            for task in self.projects[project_name]["tasks"][col]:
-                # Backward compatibility: handle missing "branch" key
+            for task in self.projects[project_name]["requirements"][req_idx]["tasks"].get(col, []):
                 tree.insert("", "end", text=task['name'], values=(task.get('branch', ''), task.get('desc', ''),))
 
-    def show_context_menu(self, event, column_name, project_name):
+    def show_context_menu(self, event, column_name, project_name, req_idx):
         menu = tk.Menu(self.root, tearoff=0, font=FONT_MAIN)
-        menu.add_command(label="New Task", command=lambda: self.add_task(column_name, project_name))
-        menu.add_command(label="Delete Task", command=lambda: self.delete_task(column_name, project_name))
-        menu.add_command(label="Edit Task", command=lambda: self.edit_task(column_name, project_name))
+        menu.add_command(label="New Task", command=lambda: self.add_task(column_name, project_name, req_idx))
+        menu.add_command(label="Delete Task", command=lambda: self.delete_task(column_name, project_name, req_idx))
+        menu.add_command(label="Edit Task", command=lambda: self.edit_task(column_name, project_name, req_idx))
         menu.add_separator()
         
         # Dynamic Move Options
-        if column_name != "Running":
-            menu.add_command(label="Move to Running", command=lambda: self.move_task(column_name, "Running", project_name))
-        if column_name != "Ended":
-            menu.add_command(label="Move to Ended", command=lambda: self.move_task(column_name, "Ended", project_name))
+        cols = ["Not Started", "In Progress", "Completed"]
+        for c in cols:
+            if c != column_name:
+                menu.add_command(label=f"Move to {c}", command=lambda target=c: self.move_task(column_name, target, project_name, req_idx))
         
         menu.post(event.x_root, event.y_root)
 
-    def add_task(self, col, p_name):
+    def add_task(self, col, p_name, req_idx):
         name = simpledialog.askstring("Task Setup", "Task Name:", parent=self.root)
         if not name: return
         branch = simpledialog.askstring("Task Setup", "Git Branch:", parent=self.root)
         desc = simpledialog.askstring("Task Setup", "Brief Description:", parent=self.root)
         
         task_data = {"name": name, "branch": branch or "", "desc": desc or ""}
-        self.projects[p_name]["tasks"][col].append(task_data)
+        self.projects[p_name]["requirements"][req_idx]["tasks"][col].append(task_data)
         self.tree_views[col].insert("", "end", text=name, values=(branch or "", desc or "",))
         self.save_project(p_name)
 
-    def delete_task(self, col, p_name):
+    def delete_task(self, col, p_name, req_idx):
         tree = self.tree_views[col]
         selected = tree.selection()
         if not selected: return
         
         if messagebox.askokcancel("Confirm", "Permanently delete this task?", parent=self.root):
             task_name = tree.item(selected)['text']
-            self.projects[p_name]["tasks"][col] = [t for t in self.projects[p_name]["tasks"][col] if t['name'] != task_name]
+            self.projects[p_name]["requirements"][req_idx]["tasks"][col] = [t for t in self.projects[p_name]["requirements"][req_idx]["tasks"][col] if t['name'] != task_name]
             tree.delete(selected)
             self.save_project(p_name)
 
-    def edit_task(self, col, p_name):
+    def edit_task(self, col, p_name, req_idx):
         tree = self.tree_views[col]
         selected = tree.selection()
         if not selected: return
@@ -271,18 +402,16 @@ class ProjectManager:
         new_branch = simpledialog.askstring("Edit Task", "Git Branch:", parent=self.root, initialvalue=old_branch)
         new_desc = simpledialog.askstring("Edit Task", "Brief Description:", parent=self.root, initialvalue=old_desc)
 
-        # Update persistent data
-        for t in self.projects[p_name]["tasks"][col]:
+        for t in self.projects[p_name]["requirements"][req_idx]["tasks"][col]:
             if t['name'] == old_name:
                 t['name'] = new_name
                 t['branch'] = new_branch or ""
                 t['desc'] = new_desc or ""
         
-        # Update Treeview GUI
         tree.item(selected, text=new_name, values=(new_branch or "", new_desc or ""))
         self.save_project(p_name)
 
-    def move_task(self, from_col, to_col, p_name):
+    def move_task(self, from_col, to_col, p_name, req_idx):
         tree_from = self.tree_views[from_col]
         selected = tree_from.selection()
         if not selected: return
@@ -292,14 +421,12 @@ class ProjectManager:
         task_branch = item['values'][0]
         task_desc = item['values'][1]
         
-        # Atomic Data Move
-        task_list_from = self.projects[p_name]["tasks"][from_col]
+        task_list_from = self.projects[p_name]["requirements"][req_idx]["tasks"][from_col]
         try:
             task_obj = next(t for t in task_list_from if t['name'] == task_name)
             task_list_from.remove(task_obj)
-            self.projects[p_name]["tasks"][to_col].append(task_obj)
+            self.projects[p_name]["requirements"][req_idx]["tasks"][to_col].append(task_obj)
             
-            # GUI Update
             tree_from.delete(selected)
             self.tree_views[to_col].insert("", "end", text=task_name, values=(task_branch, task_desc,))
             self.save_project(p_name)
