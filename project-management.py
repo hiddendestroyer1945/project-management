@@ -333,13 +333,11 @@ class ProjectManager:
             frame.place(relx=i/3, rely=0, relwidth=1/3, relheight=1)
             tk.Label(frame, text=col, font=FONT_HEADER, pady=15).pack()
             
-            tree = ttk.Treeview(frame, columns=("Branch", "Description"), show="tree headings")
+            tree = ttk.Treeview(frame, columns=("Branch",), show="tree headings")
             tree.heading("#0", text="Task Name")
             tree.heading("Branch", text="Git Branch")
-            tree.heading("Description", text="Brief Description")
-            tree.column("#0", width=200)
-            tree.column("Branch", width=150)
-            tree.column("Description", width=250)
+            tree.column("#0", width=250)
+            tree.column("Branch", width=200)
             
             tree.pack(fill="both", expand=True, padx=5, pady=5)
             self.tree_views[col] = tree
@@ -347,7 +345,7 @@ class ProjectManager:
             tree.bind("<Button-3>", lambda e, c=col: self.show_context_menu(e, c, project_name, req_idx))
             
             for task in self.projects[project_name]["requirements"][req_idx]["tasks"].get(col, []):
-                tree.insert("", "end", text=task['name'], values=(task.get('branch', ''), task.get('desc', ''),))
+                tree.insert("", "end", text=task['name'], values=(task.get('branch', ''),))
 
     def show_context_menu(self, event, column_name, project_name, req_idx):
         menu = tk.Menu(self.root, tearoff=0, font=FONT_MAIN)
@@ -368,11 +366,10 @@ class ProjectManager:
         name = simpledialog.askstring("Task Setup", "Task Name:", parent=self.root)
         if not name: return
         branch = simpledialog.askstring("Task Setup", "Git Branch:", parent=self.root)
-        desc = simpledialog.askstring("Task Setup", "Brief Description:", parent=self.root)
         
-        task_data = {"name": name, "branch": branch or "", "desc": desc or ""}
+        task_data = {"name": name, "branch": branch or ""}
         self.projects[p_name]["requirements"][req_idx]["tasks"][col].append(task_data)
-        self.tree_views[col].insert("", "end", text=name, values=(branch or "", desc or "",))
+        self.tree_views[col].insert("", "end", text=name, values=(branch or "",))
         self.save_project(p_name)
 
     def delete_task(self, col, p_name, req_idx):
@@ -394,21 +391,18 @@ class ProjectManager:
         item = tree.item(selected)
         old_name = item['text']
         old_branch = item['values'][0]
-        old_desc = item['values'][1]
 
         new_name = simpledialog.askstring("Edit Task", "Task Name:", parent=self.root, initialvalue=old_name)
         if not new_name: return
         
         new_branch = simpledialog.askstring("Edit Task", "Git Branch:", parent=self.root, initialvalue=old_branch)
-        new_desc = simpledialog.askstring("Edit Task", "Brief Description:", parent=self.root, initialvalue=old_desc)
 
         for t in self.projects[p_name]["requirements"][req_idx]["tasks"][col]:
             if t['name'] == old_name:
                 t['name'] = new_name
                 t['branch'] = new_branch or ""
-                t['desc'] = new_desc or ""
         
-        tree.item(selected, text=new_name, values=(new_branch or "", new_desc or ""))
+        tree.item(selected, text=new_name, values=(new_branch or "",))
         self.save_project(p_name)
 
     def move_task(self, from_col, to_col, p_name, req_idx):
@@ -428,7 +422,7 @@ class ProjectManager:
             self.projects[p_name]["requirements"][req_idx]["tasks"][to_col].append(task_obj)
             
             tree_from.delete(selected)
-            self.tree_views[to_col].insert("", "end", text=task_name, values=(task_branch, task_desc,))
+            self.tree_views[to_col].insert("", "end", text=task_name, values=(task_branch,))
             self.save_project(p_name)
         except StopIteration:
             messagebox.showerror("Error", "Task object state inconsistent. Refresh Board.", parent=self.root)
