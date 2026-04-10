@@ -343,6 +343,7 @@ class ProjectManager:
             board_trees[col] = tree
             
             tree.bind("<Button-3>", lambda e, c=col: self.show_context_menu(e, c, project_name, req_idx, board_trees))
+            tree.bind("<Double-Button-1>", lambda e, c=col: self.on_task_double_click(e, c, project_name, req_idx, board_trees))
             
             for task in self.projects[project_name]["requirements"][req_idx]["tasks"].get(col, []):
                 tree.insert("", "end", text=task['name'], values=(task.get('branch', ''),))
@@ -358,6 +359,10 @@ class ProjectManager:
             menu.add_command(label="Edit Task", command=lambda: self.edit_task(column_name, project_name, req_idx, board_trees))
             menu.add_command(label="Delete Task", command=lambda: self.delete_task(column_name, project_name, req_idx, board_trees))
             menu.add_separator()
+            menu.add_command(label="Create Note", command=lambda: self.open_note_editor(column_name, project_name, req_idx, board_trees))
+            menu.add_command(label="Edit Note", command=lambda: self.open_note_editor(column_name, project_name, req_idx, board_trees))
+            menu.add_command(label="Delete Note", command=lambda: self.delete_note(column_name, project_name, req_idx, board_trees))
+            menu.add_separator()
             
             # Dynamic Move Options
             cols = ["Not Started", "In Progress", "Completed"]
@@ -370,6 +375,128 @@ class ProjectManager:
             menu.add_command(label="Delete Task", command=lambda: messagebox.showwarning("Selection", "Select a task first.", parent=self.root))
         
         menu.post(event.x_root, event.y_root)
+
+    def on_task_double_click(self, event, col, p_name, req_idx, board_trees):
+        tree = board_trees[col]
+        item_id = tree.identify_row(event.y)
+        if not item_id: return
+        # Force-select the clicked row BEFORE opening the editor
+        tree.selection_set(item_id)
+        self.open_note_editor(col, p_name, req_idx, board_trees)
+
+    def delete_note(self, col, p_name, req_idx, board_trees):
+        tree = board_trees[col]
+        selected = tree.selection()
+        if not selected: return
+        task_name = tree.item(selected)['text']
+        
+        task_list = self.projects[p_name]["requirements"][req_idx]["tasks"][col]
+        for t in task_list:
+            if t['name'] == task_name:
+                if 'note' in t: del t['note']
+                self.save_project(p_name)
+                messagebox.showinfo("Success", "Note deleted.", parent=self.root)
+                break
+
+    def open_note_editor(self, col, p_name, req_idx, board_trees):
+        tree = board_trees[col]
+        selected = tree.selection()
+        if not selected: return
+        # Safely retrieve the item id from the selection tuple
+        item_id = selected[0]
+        task_name = tree.item(item_id, 'text')
+        
+        task_obj = None
+        for t in self.projects[p_name]["requirements"][req_idx]["tasks"][col]:
+            if t['name'] == task_name:
+                task_obj = t
+                break
+        
+        if not task_obj: return
+        
+        win = tk.Toplevel(self.root)
+        win.title(f"Note: {task_name}")
+        win.geometry("860x680")
+        # NOTE: No grab_set() — keeps the board window interactive
+
+        # --- Top Toolbar (Style selector + Apply button) ---
+        # MUST be packed first (top)
+        toolbar = tk.Frame(win, pady=8, relief="ridge", bd=1)
+        toolbar.pack(side="top", fill="x", padx=5, pady=(5, 0))
+
+        tk.Label(toolbar, text="Style:", font=FONT_MAIN).pack(side="left", padx=10)
+        style_cb = ttk.Combobox(
+            toolbar,
+            values=["Heading-1", "Heading-2", "Heading-3", "Heading-4", "Heading-5", "Normal"],
+            font=FONT_MAIN,
+            state="readonly",
+            width=14
+        )
+        style_cb.pack(side="left", padx=10)
+        style_cb.set("Normal")
+
+        # --- Bottom Save/Close Bar ---
+        # CRITICAL: pack the bottom bar BEFORE the expanding text_area.
+        # If text_area is packed first with expand=True it consumes all space
+        # and the button bar is pushed completely off screen.
+        btn_frame = tk.Frame(win, pady=10, relief="ridge", bd=1)
+        btn_frame.pack(side="bottom", fill="x", padx=5, pady=(0, 5))
+
+        def save_note():
+            content = text_area.get("1.0", "end-1c")
+            tags_data = []
+            for tag in ["Heading-1", "Heading-2", "Heading-3", "Heading-4", "Heading-5", "Normal"]:
+                ranges = text_area.tag_ranges(tag)
+                for i in range(0, len(ranges), 2):
+                    tags_data.append({
+                        "tag":   tag,
+                        "start": str(ranges[i]),
+                        "end":   str(ranges[i + 1])
+                    })
+            task_obj["note"] = {"text": content, "tags": tags_data}
+            self.save_project(p_name)
+            messagebox.showinfo("Saved", f"Note for '{task_name}' saved.", parent=win)
+
+        def close_note():
+            win.destroy()
+
+        tk.Button(btn_frame, text="Save Note", command=save_note,
+                  font=FONT_BOLD, width=16, bg="#2ecc71", fg="white").pack(side="left", padx=15)
+        tk.Button(btn_frame, text="Close", command=close_note,
+                  font=FONT_BOLD, width=10).pack(side="left", padx=5)
+
+        def apply_style():
+            chosen = style_cb.get()
+            try:
+                for s in ["Heading-1", "Heading-2", "Heading-3", "Heading-4", "Heading-5", "Normal"]:
+                    text_area.tag_remove(s, "sel.first", "sel.last")
+                text_area.tag_add(chosen, "sel.first", "sel.last")
+            except tk.TclError:
+                messagebox.showwarning("No Selection", "Highlight text first, then apply a style.", parent=win)
+
+        tk.Button(toolbar, text="Apply Style", command=apply_style, font=FONT_BOLD).pack(side="left", padx=10)
+
+        # --- Text Editor (packed last so it fills the remaining middle space) ---
+        text_area = tk.Text(win, font=("Arial", 16), wrap="word", undo=True, relief="sunken", bd=2)
+        text_area.pack(side="top", fill="both", expand=True, padx=10, pady=8)
+
+        # Configure all heading/normal tags
+        text_area.tag_configure("Heading-1", font=("Arial", 26, "bold"))
+        text_area.tag_configure("Heading-2", font=("Arial", 24, "bold"))
+        text_area.tag_configure("Heading-3", font=("Arial", 22, "bold"))
+        text_area.tag_configure("Heading-4", font=("Arial", 20, "bold"))
+        text_area.tag_configure("Heading-5", font=("Arial", 18, "bold"))
+        text_area.tag_configure("Normal",    font=("Arial", 16))
+
+        # Load existing note data if present
+        existing_note = task_obj.get("note", {})
+        if existing_note.get("text"):
+            text_area.insert("1.0", existing_note["text"])
+            for tag_data in existing_note.get("tags", []):
+                try:
+                    text_area.tag_add(tag_data["tag"], tag_data["start"], tag_data["end"])
+                except tk.TclError:
+                    pass  # Ignore stale index positions from old saves
 
     def add_task(self, col, p_name, req_idx, board_trees):
         name = simpledialog.askstring("Task Setup", "Task Name:", parent=self.root)
